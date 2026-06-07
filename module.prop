@@ -1,7 +1,7 @@
 id=SoterFix
 name=Soter Key Fixer
-version=1.2
-versionCode=12
+version=1.3
+versionCode=13
 author=酷安@小黄泊, edited by luigimak
 description=Repairs SOTER Key issues, automatically executes the repair script upon startup.
 supported=KernelSU
