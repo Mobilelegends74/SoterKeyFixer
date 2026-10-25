@@ -11,8 +11,8 @@ SF_PROFILE=uninspected
 SF_MAX_ATTEMPTS=3
 SF_POLL=120
 SF_GRACE=90
-SF_BOOT_DELAY=300
-SF_BOOT_SETTLE=30
+SF_BOOT_DELAY=0
+SF_BOOT_SETTLE=5
 SF_BOOT_PENDING=no
 SF_BOOT_READY_SINCE=0
 SF_BOOT_DUE=0
@@ -93,7 +93,7 @@ sf_init() {
     umask 077
     mkdir -p "$SF_STATE" || return 1
     chmod 0700 "$SF_STATE" || return 1
-    for sf_file in budget grace status.json events.log events.log.1 log.lock repair.lock watch.lock diag.lock pause stop no-boot-recovery; do
+    for sf_file in budget grace status.json events.log events.log.1 launcher.log launcher.log.1 log.lock repair.lock watch.lock diag.lock pause stop no-boot-recovery; do
         [ ! -L "$SF_STATE/$sf_file" ] || return 1
     done
     SF_BOOT=$(sf_boot_id) || return 1
@@ -196,7 +196,12 @@ sf_ready() {
     sf_time=$(sf_now) || { SF_REASON=CLOCK_UNAVAILABLE; return 1; }
     if ! IFS=' ' read -r sf_graceboot sf_deadline sf_extra < "$SF_STATE/grace" 2>/dev/null ||
         [ "$sf_graceboot" != "$SF_BOOT" ] || ! sf_uint "$sf_deadline" ||
-        [ -n "$sf_extra" ] || [ "$sf_time" -lt "$sf_deadline" ]; then
+        [ -n "$sf_extra" ]; then
+        SF_REASON=BOOT_GRACE; return 1
+    fi
+    # Only the one-time startup operation uses readiness instead of a fixed
+    # grace delay. Manual and stopped-service recovery retain their cooldowns.
+    if [ "${1:-}" != boot ] && [ "$sf_time" -lt "$sf_deadline" ]; then
         SF_REASON=BOOT_GRACE; return 1
     fi
     sf_unlocked=$(sf_prop sys.user.0.ce_available)
@@ -253,7 +258,7 @@ sf_repair() (
     case "$sf_mode" in auto|manual|boot) ;; *) exit 2 ;; esac
     exec 8>"$SF_STATE/repair.lock" || exit 1
     sf_flock 8 || { echo 'Another recovery is active.'; exit 12; }
-    sf_ready || { sf_report "$SF_REASON"; exit 10; }
+    sf_ready "$sf_mode" || { sf_report "$SF_REASON"; exit 10; }
     sf_profile || { sf_report PROFILE_READ_FAILED; exit 10; }
     case "$SF_PROFILE:$sf_mode" in
         persistent:*|lazy:manual) ;;
@@ -286,9 +291,9 @@ sf_repair() (
         sf_report COOLDOWN_NO_ACTION; exit 10
     fi
     # Recheck readiness immediately before the only mutating command.
-    sf_ready || { sf_report "$SF_REASON"; exit 10; }
+    sf_ready "$sf_mode" || { sf_report "$SF_REASON"; exit 10; }
     sf_capture before || sf_log 'Evidence capture unavailable; availability recovery is still bounded.'
-    sf_ready || { sf_report "$SF_REASON"; exit 10; }
+    sf_ready "$sf_mode" || { sf_report "$SF_REASON"; exit 10; }
     sf_latest=$(sf_state)
     case "$sf_mode:$sf_latest" in
         auto:stopped|manual:running|manual:stopped|boot:running|boot:stopped) sf_before=$sf_latest ;;
@@ -342,6 +347,10 @@ sf_capture() (
     {
         date -u '+%Y-%m-%dT%H:%M:%SZ'
         echo "uptime_s=$(sf_now) boot_id=$SF_BOOT"
+        echo "module_version=$(sf_version) worker=$(sf_worker_status)"
+        for sf_flag in pause stop no-boot-recovery; do
+            if [ -e "$SF_STATE/$sf_flag" ]; then echo "flag_$sf_flag=present"; else echo "flag_$sf_flag=absent"; fi
+        done
         echo 'key_health=UNKNOWN_UNVERIFIED; no cryptographic validation performed'
         for sf_name in ro.product.manufacturer ro.product.model ro.product.device ro.build.version.sdk \
             ro.build.version.release sys.boot_completed sys.user.0.ce_available init.svc.vendor.soter \
@@ -368,7 +377,11 @@ sf_capture() (
 )
 
 sf_diagnose() (
-    sf_capture current || sf_log 'Current evidence capture skipped.'
+    sf_capture current || {
+        sf_log 'diagnostics=failed_current_capture; previous archive is not a new export'
+        echo 'Diagnostic export failed; any existing archive may be OLD.' >&2
+        exit 1
+    }
     exec 7>"$SF_STATE/diag.lock" || exit 1
     sf_flock 7 || { echo 'Another diagnostic export is active.'; exit 12; }
     if [ -f "$MODDIR/build-info.json" ]; then
@@ -377,7 +390,7 @@ sf_diagnose() (
     fi
     # No application data, keys, Keybox, keystore files, or full logcat are copied.
     set --
-    for sf_name in build-info.json status.json profile.txt budget grace events.log events.log.1 evidence-before.txt evidence-current.txt; do
+    for sf_name in build-info.json status.json profile.txt budget grace events.log events.log.1 launcher.log launcher.log.1 evidence-before.txt evidence-current.txt; do
         [ -f "$SF_STATE/$sf_name" ] && set -- "$@" "$sf_name"
     done
     [ "$#" -gt 0 ] || exit 1
@@ -385,7 +398,7 @@ sf_diagnose() (
         rm -f "$SF_STATE/diagnostics.tmp.$$.tar.gz"; exit 1;
     }
     mv -f "$SF_STATE/diagnostics.tmp.$$.tar.gz" "$SF_STATE/soterfix-diagnostics.tar.gz" || exit 1
-    echo "Diagnostics: $SF_STATE/soterfix-diagnostics.tar.gz (root access; review before sharing)."
+    echo "Diagnostics: $SF_STATE/soterfix-diagnostics.tar.gz (version=$(sf_version), boot_id=$SF_BOOT; root access; review before sharing)."
 )
 
 # Narrow, empirically tested workaround for the observed OnePlus 13R boot
@@ -430,6 +443,7 @@ sf_boot_defer() {
 sf_boot_tick() {
     SF_NEXT_SLEEP=$SF_POLL
     [ "$SF_BOOT_PENDING" = yes ] || return 0
+    SF_NEXT_SLEEP=5
     sf_boot_target || { SF_BOOT_PENDING=no; sf_log 'boot_workaround=disabled'; return 0; }
     sf_budget || { SF_BOOT_PENDING=no; sf_log 'boot_workaround=invalid_budget'; return 0; }
     if [ "$SF_COUNT" -gt 0 ]; then
@@ -443,7 +457,7 @@ sf_boot_tick() {
         [ "$sf_bt_left" -ge "$SF_POLL" ] || SF_NEXT_SLEEP=$sf_bt_left
         return 0
     fi
-    if ! sf_ready; then
+    if ! sf_ready boot; then
         SF_BOOT_READY_SINCE=0
         sf_boot_defer "$SF_REASON"
         return 0
@@ -466,12 +480,36 @@ sf_boot_tick() {
     sf_bt_rc=$?
     case "$sf_bt_rc" in 0|1|11|13|14) SF_BOOT_PENDING=no ;; esac
     if sf_budget && [ "$SF_COUNT" -gt 0 ]; then SF_BOOT_PENDING=no; fi
-    [ "$SF_BOOT_PENDING" != yes ] || SF_NEXT_SLEEP=30
+    if [ "$SF_BOOT_PENDING" = yes ]; then SF_NEXT_SLEEP=5; else SF_NEXT_SLEEP=$SF_POLL; fi
+}
+
+sf_worker_status() (
+    [ -f "$SF_STATE/watch.lock" ] || { echo not_started; exit; }
+    exec 9>"$SF_STATE/watch.lock" || { echo unknown; exit; }
+    if sf_flock 9; then echo not_running; else echo lock_held; fi
+)
+
+sf_launch() {
+    # Keep startup errors instead of sending them to /dev/null. Detach from
+    # the launcher session; the worker owns watch.lock and remains deduplicated.
+    if [ -f "$SF_STATE/launcher.log" ] && [ "$(wc -c < "$SF_STATE/launcher.log")" -ge 131072 ]; then
+        mv -f "$SF_STATE/launcher.log" "$SF_STATE/launcher.log.1" || return 1
+    fi
+    sf_log "launcher=requested version=$(sf_version) worker=$(sf_worker_status)"
+    if [ -n "$SF_BB" ] && "$SF_BB" setsid --help >/dev/null 2>&1; then
+        "$SF_BB" setsid /system/bin/sh "$MODDIR/soterctl.sh" watch </dev/null >>"$SF_STATE/launcher.log" 2>&1 &
+    elif command -v setsid >/dev/null 2>&1; then
+        setsid /system/bin/sh "$MODDIR/soterctl.sh" watch </dev/null >>"$SF_STATE/launcher.log" 2>&1 &
+    else
+        sf_log 'launcher=setsid_unavailable; using background worker'
+        /system/bin/sh "$MODDIR/soterctl.sh" watch </dev/null >>"$SF_STATE/launcher.log" 2>&1 &
+    fi
 }
 
 sf_watch() (
     exec 9>"$SF_STATE/watch.lock" || exit 1
     sf_flock 9 || exit 0
+    trap 'sf_log "monitor=exit rc=$?"' 0
     sf_log "monitor=starting version=$(sf_version) functional_probe=unavailable"
     sf_i=0
     sf_wait_now=$(sf_now) || exit 1

@@ -6,6 +6,7 @@ MODDIR=$(cd "$MODDIR" && pwd) || exit 1
 sf_init || exit 1
 
 case "${1:-status}" in
+    launch) sf_launch ;;
     watch) sf_watch ;;
     repair) sf_repair manual ;;
     status)
@@ -13,8 +14,9 @@ case "${1:-status}" in
         echo "Service availability: $(sf_state)"
         echo 'Hardware key health: UNKNOWN_UNVERIFIED (no validated functional probe implemented)'
         if sf_boot_target; then
-            echo "Startup workaround: at most once this boot, earliest uptime $(sf_boot_deadline 2>/dev/null), after dependency stabilization."
+            echo 'Startup workaround: once after boot completion, unlock and 5-second dependency readiness check; no fixed boot delay.'
         else echo 'Startup workaround: disabled or untested device profile.'; fi
+        echo "Background worker: $(sf_worker_status)"
         if sf_budget; then echo "Requests this boot: $SF_COUNT/3"; else echo 'Recovery budget invalid; automatic recovery is blocked.'; fi
         if [ -f "$SF_STATE/status.json" ]; then
             echo 'Last recovery observation (not a live key test):'
@@ -31,7 +33,7 @@ case "${1:-status}" in
     resume)
         sf_stop_allows_boot || { echo 'Module uninstall stop is set for this boot; reboot after reinstalling.'; exit 1; }
         rm -f "$SF_STATE/pause"
-        /system/bin/sh "$MODDIR/soterctl.sh" watch >/dev/null 2>&1 &
+        sf_launch
         echo 'Recovery resumed; budgets and cooldowns are preserved.' ;;
     boot-off)
         : > "$SF_STATE/no-boot-recovery"
@@ -40,5 +42,5 @@ case "${1:-status}" in
     boot-on)
         rm -f "$SF_STATE/no-boot-recovery"
         echo 'Startup workaround enabled for the next reboot; budgets are not reset.' ;;
-    *) echo 'Usage: soterctl.sh status|repair|diagnose|pause|resume|watch|boot-off|boot-on'; exit 2 ;;
+    *) echo 'Usage: soterctl.sh status|repair|diagnose|pause|resume|watch|launch|boot-off|boot-on'; exit 2 ;;
 esac

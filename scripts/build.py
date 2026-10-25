@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import shutil
 import subprocess
 import zipfile
 
@@ -23,7 +24,7 @@ EXECUTABLE = {'action.sh', 'service.sh', 'boot-completed.sh', 'uninstall.sh',
 def build():
     output = ROOT / 'dist'
     output.mkdir(exist_ok=True)
-    archive = output / 'SoterKeyFixer-1.4-TEST3.zip'
+    archive = output / 'SoterKeyFixer-1.4-TEST4.zip'
     revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     if os.environ.get('GITHUB_SHA'):
         assert os.environ['GITHUB_SHA'] == revision, 'Checkout differs from workflow source'
@@ -53,11 +54,17 @@ def build():
         assert z.testzip() is None
         assert set(z.namelist()) == set(PAYLOAD) | {'build-info.json'}
         prop = z.read('module.prop').decode()
-        assert 'id=SoterFix\n' in prop and 'versionCode=16\n' in prop and 'version=1.4-test3\n' in prop
+        assert 'id=SoterFix\n' in prop and 'versionCode=17\n' in prop and 'version=1.4-test4\n' in prop
         for name in EXECUTABLE:
             assert (z.getinfo(name).external_attr >> 16) & 0o777 == 0o755
         assert 'post-fs-data.sh' not in z.namelist()
         assert z.read('META-INF/com/google/android/updater-script').strip() == b'#MAGISK'
+        # Actions already creates a downloadable ZIP. Upload the validated
+        # module payload itself so its archive is directly installable.
+        stage = output / 'installable'
+        if stage.exists():
+            shutil.rmtree(stage)
+        z.extractall(stage)
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     (output / (archive.name + '.sha256')).write_text(digest + '  ' + archive.name + '\n')
     print(archive)

@@ -1,7 +1,7 @@
 id=SoterFix
-name=Soter Key Fixer 1.4 [TEST 3]
-version=1.4-test3
-versionCode=16
+name=Soter Key Fixer 1.4 [TEST 4]
+version=1.4-test4
+versionCode=17
 author=酷安@小黄泊, luigimak, Mobilelegends74
 description=Bounded SOTER service recovery with diagnostics. Hardware key validity is not verified. Reboot after installation.
 supported=KernelSU

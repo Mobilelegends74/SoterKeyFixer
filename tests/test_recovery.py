@@ -124,12 +124,10 @@ sf_init || exit 90
     def test_boot_workaround_waits_and_runs_once_with_honest_status(self):
         self.boot_fixture()
         self.run_shell('''sf_boot_prepare
-sf_boot_tick; test "$SF_NEXT_SLEEP" = 120 || exit 80
-echo 1290 > "$CASE_ROOT/clock"
-sf_boot_tick; test "$SF_NEXT_SLEEP" = 10 || exit 81
-echo 1300 > "$CASE_ROOT/clock"
-sf_boot_tick; test "$SF_NEXT_SLEEP" = 30 || exit 82
-echo 1330 > "$CASE_ROOT/clock"
+sf_boot_tick; test "$SF_NEXT_SLEEP" = 5 || exit 80
+echo 1004 > "$CASE_ROOT/clock"
+sf_boot_tick; test "$SF_NEXT_SLEEP" = 1 || exit 81
+echo 1005 > "$CASE_ROOT/clock"
 sf_boot_tick
 test "$SF_BOOT_PENDING" = no || exit 83
 sf_boot_tick
@@ -203,7 +201,26 @@ sf_boot_prepare; sf_boot_tick; test "$SF_BOOT_PENDING" = no''')
         self.assertEqual(self.controls(), ['ctl.restart vendor.soter'])
         status = json.loads((self.root / 'state/status.json').read_text())
         self.assertEqual(status['request_mode'], 'boot')
-        self.assertGreaterEqual(int(status['uptime_s']), 1330)
+        self.assertGreaterEqual(int(status['uptime_s']), 1005)
+        self.assertLess(int(status['uptime_s']), 1090)
+
+    def test_boot_waits_for_unlock_then_runs_without_minutes_delay(self):
+        self.boot_fixture()
+        self.prop('sys.user.0.ce_available', 'false')
+        self.stub('cmd', 'echo RUNNING_LOCKED\n')
+        self.run_shell('''sf_boot_prepare
+sf_boot_tick; test "$SF_BOOT_READY_SINCE" = 0 || exit 80
+test "$SF_NEXT_SLEEP" = 5 || exit 81
+echo true > "$CASE_ROOT/prop.sys.user.0.ce_available"
+echo 1005 > "$CASE_ROOT/clock"; sf_boot_tick
+echo 1010 > "$CASE_ROOT/clock"; sf_boot_tick''')
+        self.assertEqual(self.controls(), ['ctl.restart vendor.soter'])
+
+    def test_worker_status_distinguishes_missing_free_and_held_lock(self):
+        self.assertIn('not_started', self.run_shell('sf_worker_status'))
+        self.write('state/watch.lock')
+        self.assertIn('not_running', self.run_shell('sf_worker_status'))
+        self.assertIn('lock_held', self.run_shell('exec 9>"$SF_STATE/watch.lock"; sf_flock 9; sf_worker_status'))
 
     def test_transient_stop_is_not_repaired(self):
         self.prop('init.svc.vendor.soter', 'stopped')
@@ -435,8 +452,15 @@ esac
         self.assertTrue((self.root / 'state/soterfix-diagnostics.tar.gz').is_file())
         evidence = (self.root / 'state/evidence-current.txt').read_text()
         self.assertIn('provider failure status=4', evidence)
+        self.assertIn('module_version=1.4-test4', evidence)
+        self.assertIn('worker=not_started', evidence)
         self.assertNotIn('PRIVATE_FIXTURE', evidence)
         self.assertEqual(self.controls(), [])
+
+    def test_failed_fresh_capture_does_not_claim_old_archive_is_new(self):
+        self.write('state/soterfix-diagnostics.tar.gz', 'old archive')
+        self.run_shell('sf_capture() { return 12; }; sf_diagnose', 1)
+        self.assertEqual((self.root / 'state/soterfix-diagnostics.tar.gz').read_text(), 'old archive')
 
     def test_log_rotation_is_bounded(self):
         self.write('state/events.log', 'x' * 131072)
