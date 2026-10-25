@@ -11,6 +11,13 @@ SF_PROFILE=uninspected
 SF_MAX_ATTEMPTS=3
 SF_POLL=120
 SF_GRACE=90
+SF_BOOT_DELAY=300
+SF_BOOT_SETTLE=30
+SF_BOOT_PENDING=no
+SF_BOOT_READY_SINCE=0
+SF_BOOT_DUE=0
+SF_BOOT_LAST_REASON=
+SF_NEXT_SLEEP=120
 
 sf_tools() {
     for sf_candidate in /data/adb/ksu/bin/busybox /data/adb/magisk/busybox; do
@@ -86,7 +93,7 @@ sf_init() {
     umask 077
     mkdir -p "$SF_STATE" || return 1
     chmod 0700 "$SF_STATE" || return 1
-    for sf_file in budget grace status.json events.log events.log.1 log.lock repair.lock watch.lock diag.lock pause stop; do
+    for sf_file in budget grace status.json events.log events.log.1 log.lock repair.lock watch.lock diag.lock pause stop no-boot-recovery; do
         [ ! -L "$SF_STATE/$sf_file" ] || return 1
     done
     SF_BOOT=$(sf_boot_id) || return 1
@@ -224,8 +231,9 @@ sf_budget() {
 sf_report() {
     sf_result=$1
     sf_available=$(sf_state)
-    printf '{"scope":"last_recovery_observation","boot_id":"%s","uptime_s":"%s","result":"%s","profile":"%s","service":"vendor.soter","availability":"%s","key_health":"UNKNOWN_UNVERIFIED","functional_probe":"unavailable"}\n' \
-        "$SF_BOOT" "$(sf_now)" "$sf_result" "$SF_PROFILE" "$sf_available" > "$SF_STATE/status.tmp.$$" &&
+    case "${sf_mode:-none}" in auto|manual|boot) sf_request_mode=$sf_mode ;; *) sf_request_mode=none ;; esac
+    printf '{"scope":"last_recovery_observation","boot_id":"%s","uptime_s":"%s","request_mode":"%s","result":"%s","profile":"%s","service":"vendor.soter","availability":"%s","key_health":"UNKNOWN_UNVERIFIED","functional_probe":"unavailable"}\n' \
+        "$SF_BOOT" "$(sf_now)" "$sf_request_mode" "$sf_result" "$SF_PROFILE" "$sf_available" > "$SF_STATE/status.tmp.$$" &&
         mv -f "$SF_STATE/status.tmp.$$" "$SF_STATE/status.json"
     sf_log "result=$sf_result availability=$sf_available key_health=UNKNOWN_UNVERIFIED"
     printf '%s; service=%s; key health is NOT verified.\n' "$sf_result" "$sf_available"
@@ -235,14 +243,14 @@ sf_control() {
     # Deliberately literal: no configurable target and no generic service runner.
     case "$1" in
         auto) sf_timed 5 setprop ctl.start vendor.soter ;;
-        manual) sf_timed 5 setprop ctl.restart vendor.soter ;;
+        manual|boot) sf_timed 5 setprop ctl.restart vendor.soter ;;
         *) return 1 ;;
     esac
 }
 
 sf_repair() (
     sf_mode=$1
-    case "$sf_mode" in auto|manual) ;; *) exit 2 ;; esac
+    case "$sf_mode" in auto|manual|boot) ;; *) exit 2 ;; esac
     exec 8>"$SF_STATE/repair.lock" || exit 1
     sf_flock 8 || { echo 'Another recovery is active.'; exit 12; }
     sf_ready || { sf_report "$SF_REASON"; exit 10; }
@@ -251,6 +259,9 @@ sf_repair() (
         persistent:*|lazy:manual) ;;
         *) sf_report PROFILE_NOT_SAFE_FOR_THIS_OPERATION; exit 11 ;;
     esac
+    if [ "$sf_mode" = boot ] && ! sf_boot_gate; then
+        sf_report BOOT_WORKAROUND_NOT_READY; exit 10
+    fi
     sf_before=$(sf_state)
     case "$sf_before:$sf_mode" in
         stopped:auto)
@@ -260,10 +271,14 @@ sf_repair() (
                 sf_active && [ "$(sf_state)" = stopped ] || { sf_report TRANSIENT_STOP_NO_ACTION; exit 10; }
                 sf_i=$((sf_i + 1))
             done ;;
-        running:manual|stopped:manual) ;;
+        running:manual|stopped:manual|running:boot|stopped:boot) ;;
         *) sf_report NO_CONFIRMED_RECOVERABLE_FAILURE; exit 10 ;;
     esac
     sf_budget || { sf_report INVALID_BUDGET_NO_ACTION; exit 13; }
+    if [ "$sf_mode" = boot ] && [ "$SF_COUNT" -gt 0 ]; then
+        sf_log 'boot_workaround=skipped_prior_request; no second startup request'
+        exit 14
+    fi
     [ "$SF_COUNT" -lt "$SF_MAX_ATTEMPTS" ] || { sf_report CIRCUIT_OPEN_UNTIL_REBOOT; exit 13; }
     sf_time=$(sf_now) || exit 1
     case "$SF_COUNT" in 0) sf_wait=0 ;; 1) sf_wait=300 ;; *) sf_wait=900 ;; esac
@@ -276,15 +291,24 @@ sf_repair() (
     sf_ready || { sf_report "$SF_REASON"; exit 10; }
     sf_latest=$(sf_state)
     case "$sf_mode:$sf_latest" in
-        auto:stopped|manual:running|manual:stopped) sf_before=$sf_latest ;;
+        auto:stopped|manual:running|manual:stopped|boot:running|boot:stopped) sf_before=$sf_latest ;;
         *) sf_report TRANSIENT_STOP_NO_ACTION; exit 10 ;;
     esac
+    if [ "$sf_mode" = boot ] && ! sf_boot_gate; then
+        sf_report BOOT_WORKAROUND_NOT_READY; exit 10
+    fi
     sf_previous_pid=$(sf_pid) || sf_previous_pid=
     SF_COUNT=$((SF_COUNT + 1))
     printf 'v1 %s %s %s\n' "$SF_BOOT" "$SF_COUNT" "$(sf_now)" > "$SF_STATE/budget.tmp.$$" &&
         mv -f "$SF_STATE/budget.tmp.$$" "$SF_STATE/budget" || exit 1
     sf_log "request=$sf_mode before=$sf_before attempt=$SF_COUNT/3 profile=$SF_PROFILE"
+    if [ "$sf_mode" = boot ]; then
+        sf_log 'cause=scheduled_boot_workaround; this is NOT a detected key failure or a key test'
+    fi
     sf_active || { sf_report DISABLED_BEFORE_REQUEST; exit 10; }
+    if [ "$sf_mode" = boot ] && ! sf_boot_gate; then
+        sf_report BOOT_WORKAROUND_CANCELLED; exit 10
+    fi
     if ! sf_control "$sf_mode"; then sf_report CONTROL_DENIED_OR_TIMEOUT; exit 1; fi
     sf_transition=no; sf_i=0
     sf_verify_now=$(sf_now) || exit 1
@@ -299,6 +323,7 @@ sf_repair() (
         if [ "$sf_after" = running ]; then
             if [ "$sf_before" = stopped ] || [ "$sf_transition" = yes ] ||
                 { [ -n "$sf_previous_pid" ] && [ -n "$sf_after_pid" ] && [ "$sf_previous_pid" != "$sf_after_pid" ]; }; then
+                sf_log "lifecycle mode=$sf_mode before_pid=${sf_previous_pid:-unknown} after_pid=${sf_after_pid:-unknown}"
                 sf_report SERVICE_AVAILABLE_KEY_UNVERIFIED; exit 0
             fi
         fi
@@ -363,6 +388,87 @@ sf_diagnose() (
     echo "Diagnostics: $SF_STATE/soterfix-diagnostics.tar.gz (root access; review before sharing)."
 )
 
+# Narrow, empirically tested workaround for the observed OnePlus 13R boot
+# scenario. This intentionally schedules ONE request, not a functional probe.
+# The same persisted budget deduplicates manual/boot requests under repair.lock.
+sf_boot_target() {
+    [ ! -e "$SF_STATE/no-boot-recovery" ] &&
+        [ "$(sf_prop ro.product.device)" = OP5D3BL1 ]
+}
+
+sf_boot_deadline() {
+    IFS=' ' read -r sf_bd_boot sf_bd_grace sf_bd_extra < "$SF_STATE/grace" || return 1
+    [ "$sf_bd_boot" = "$SF_BOOT" ] && [ -z "$sf_bd_extra" ] &&
+        sf_uint "$sf_bd_grace" && [ "$sf_bd_grace" -ge "$SF_GRACE" ] || return 1
+    printf '%s\n' "$((sf_bd_grace - SF_GRACE + SF_BOOT_DELAY))"
+}
+
+sf_boot_prepare() {
+    SF_BOOT_PENDING=no; SF_BOOT_READY_SINCE=0; SF_BOOT_LAST_REASON=
+    sf_boot_target || { sf_log 'boot_workaround=off_or_untested_device'; return 0; }
+    SF_BOOT_DUE=$(sf_boot_deadline) || { sf_log 'boot_workaround=invalid_schedule; no startup request'; return 0; }
+    SF_BOOT_PENDING=yes
+    sf_log "boot_workaround=scheduled earliest_uptime=$SF_BOOT_DUE stable_ready_seconds=$SF_BOOT_SETTLE key_health=UNKNOWN_UNVERIFIED"
+}
+
+sf_boot_gate() {
+    sf_boot_target || return 1
+    sf_bg_due=$(sf_boot_deadline) || return 1
+    sf_bg_now=$(sf_now) || return 1
+    sf_uint "$SF_BOOT_READY_SINCE" && [ "$SF_BOOT_READY_SINCE" -gt 0 ] &&
+        [ "$sf_bg_now" -ge "$sf_bg_due" ] &&
+        [ "$((sf_bg_now - SF_BOOT_READY_SINCE))" -ge "$SF_BOOT_SETTLE" ]
+}
+
+sf_boot_defer() {
+    if [ "$SF_BOOT_LAST_REASON" != "$1" ]; then
+        sf_log "boot_workaround=deferred reason=$1"
+        SF_BOOT_LAST_REASON=$1
+    fi
+}
+
+sf_boot_tick() {
+    SF_NEXT_SLEEP=$SF_POLL
+    [ "$SF_BOOT_PENDING" = yes ] || return 0
+    sf_boot_target || { SF_BOOT_PENDING=no; sf_log 'boot_workaround=disabled'; return 0; }
+    sf_budget || { SF_BOOT_PENDING=no; sf_log 'boot_workaround=invalid_budget'; return 0; }
+    if [ "$SF_COUNT" -gt 0 ]; then
+        SF_BOOT_PENDING=no
+        sf_log 'boot_workaround=skipped_prior_request; budget already used this boot'
+        return 0
+    fi
+    sf_bt_now=$(sf_now) || { SF_BOOT_PENDING=no; return 1; }
+    if [ "$sf_bt_now" -lt "$SF_BOOT_DUE" ]; then
+        sf_bt_left=$((SF_BOOT_DUE - sf_bt_now))
+        [ "$sf_bt_left" -ge "$SF_POLL" ] || SF_NEXT_SLEEP=$sf_bt_left
+        return 0
+    fi
+    if ! sf_ready; then
+        SF_BOOT_READY_SINCE=0
+        sf_boot_defer "$SF_REASON"
+        return 0
+    fi
+    sf_bt_state=$(sf_state)
+    case "$sf_bt_state" in
+        running|stopped) ;;
+        *) SF_BOOT_READY_SINCE=0; sf_boot_defer INIT_TRANSITION_OR_UNKNOWN; return 0 ;;
+    esac
+    if [ "$SF_BOOT_READY_SINCE" = 0 ]; then
+        SF_BOOT_READY_SINCE=$sf_bt_now
+        sf_boot_defer STABILIZING_DEPENDENCIES
+    fi
+    sf_bt_stable=$((sf_bt_now - SF_BOOT_READY_SINCE))
+    if [ "$sf_bt_stable" -lt "$SF_BOOT_SETTLE" ]; then
+        SF_NEXT_SLEEP=$((SF_BOOT_SETTLE - sf_bt_stable))
+        return 0
+    fi
+    sf_repair boot
+    sf_bt_rc=$?
+    case "$sf_bt_rc" in 0|1|11|13|14) SF_BOOT_PENDING=no ;; esac
+    if sf_budget && [ "$SF_COUNT" -gt 0 ]; then SF_BOOT_PENDING=no; fi
+    [ "$SF_BOOT_PENDING" != yes ] || SF_NEXT_SLEEP=30
+}
+
 sf_watch() (
     exec 9>"$SF_STATE/watch.lock" || exit 1
     sf_flock 9 || exit 0
@@ -385,8 +491,10 @@ sf_watch() (
         sf_report MONITOR_READ_ONLY_UNSUPPORTED_PROFILE
         exit 0
     }
+    sf_boot_prepare
     sf_last_state=
     while sf_active; do
+        sf_boot_tick
         sf_current=$(sf_state)
         if [ "$sf_current" != "$sf_last_state" ]; then
             sf_log "availability=$sf_current profile=$SF_PROFILE key_health=UNKNOWN_UNVERIFIED"
@@ -398,7 +506,7 @@ sf_watch() (
                 sf_rc=$?
                 [ "$sf_rc" != 13 ] || { sf_log 'monitor=circuit_open; no more automatic requests this boot.'; exit 0; }
                 sf_sleep 30 ;;
-            running|restarting) sf_sleep "$SF_POLL" ;;
+            running|restarting) sf_sleep "$SF_NEXT_SLEEP" ;;
             *) sf_log 'SERVICE_UNAVAILABLE; no automatic recovery.'; exit 0 ;;
         esac
     done

@@ -12,6 +12,9 @@ case "${1:-status}" in
         echo "Soter Key Fixer $(sf_version)"
         echo "Service availability: $(sf_state)"
         echo 'Hardware key health: UNKNOWN_UNVERIFIED (no validated functional probe implemented)'
+        if sf_boot_target; then
+            echo "Startup workaround: at most once this boot, earliest uptime $(sf_boot_deadline 2>/dev/null), after dependency stabilization."
+        else echo 'Startup workaround: disabled or untested device profile.'; fi
         if sf_budget; then echo "Requests this boot: $SF_COUNT/3"; else echo 'Recovery budget invalid; automatic recovery is blocked.'; fi
         if [ -f "$SF_STATE/status.json" ]; then
             echo 'Last recovery observation (not a live key test):'
@@ -30,5 +33,12 @@ case "${1:-status}" in
         rm -f "$SF_STATE/pause"
         /system/bin/sh "$MODDIR/soterctl.sh" watch >/dev/null 2>&1 &
         echo 'Recovery resumed; budgets and cooldowns are preserved.' ;;
-    *) echo 'Usage: soterctl.sh status|repair|diagnose|pause|resume|watch'; exit 2 ;;
+    boot-off)
+        : > "$SF_STATE/no-boot-recovery"
+        sf_log 'boot_workaround=disabled_by_user'
+        echo 'Startup workaround disabled; manual repair remains available.' ;;
+    boot-on)
+        rm -f "$SF_STATE/no-boot-recovery"
+        echo 'Startup workaround enabled for the next reboot; budgets are not reset.' ;;
+    *) echo 'Usage: soterctl.sh status|repair|diagnose|pause|resume|watch|boot-off|boot-on'; exit 2 ;;
 esac

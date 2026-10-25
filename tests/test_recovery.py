@@ -117,6 +117,94 @@ sf_init || exit 90
         self.run_shell('sf_repair manual')
         self.assertEqual(self.controls(), ['ctl.restart vendor.soter'])
 
+    def boot_fixture(self):
+        self.prop('ro.product.device', 'OP5D3BL1')
+        self.write('state/grace', BOOT + ' 1090\n')
+
+    def test_boot_workaround_waits_and_runs_once_with_honest_status(self):
+        self.boot_fixture()
+        self.run_shell('''sf_boot_prepare
+sf_boot_tick; test "$SF_NEXT_SLEEP" = 120 || exit 80
+echo 1290 > "$CASE_ROOT/clock"
+sf_boot_tick; test "$SF_NEXT_SLEEP" = 10 || exit 81
+echo 1300 > "$CASE_ROOT/clock"
+sf_boot_tick; test "$SF_NEXT_SLEEP" = 30 || exit 82
+echo 1330 > "$CASE_ROOT/clock"
+sf_boot_tick
+test "$SF_BOOT_PENDING" = no || exit 83
+sf_boot_tick
+sf_boot_prepare; sf_boot_tick
+test "$SF_BOOT_PENDING" = no''')
+        self.assertEqual(self.controls(), ['ctl.restart vendor.soter'])
+        status = json.loads((self.root / 'state/status.json').read_text())
+        self.assertEqual(status['request_mode'], 'boot')
+        self.assertEqual(status['key_health'], 'UNKNOWN_UNVERIFIED')
+        self.run_shell('sf_boot_prepare; sf_boot_tick; test "$SF_BOOT_PENDING" = no')
+        self.assertEqual(len(self.controls()), 1)
+
+    def test_boot_readiness_resets_when_tee_not_ready(self):
+        self.boot_fixture()
+        self.run_shell('''sf_boot_prepare
+echo 1300 > "$CASE_ROOT/clock"; sf_boot_tick
+echo restarting > "$CASE_ROOT/prop.init.svc.vendor.qseecomd"
+echo 1320 > "$CASE_ROOT/clock"; sf_boot_tick
+test "$SF_BOOT_READY_SINCE" = 0 || exit 80
+echo running > "$CASE_ROOT/prop.init.svc.vendor.qseecomd"
+echo 1340 > "$CASE_ROOT/clock"; sf_boot_tick
+test "$SF_BOOT_READY_SINCE" = 1340 || exit 81
+echo 1370 > "$CASE_ROOT/clock"; sf_boot_tick''')
+        self.assertEqual(self.controls(), ['ctl.restart vendor.soter'])
+
+    def test_prior_manual_request_skips_boot_workaround(self):
+        self.boot_fixture()
+        self.write('clock', '1200\n')
+        self.run_shell('sf_repair manual; sf_boot_prepare; sf_boot_tick; test "$SF_BOOT_PENDING" = no')
+        self.assertEqual(self.controls(), ['ctl.restart vendor.soter'])
+
+    def test_boot_optout_or_other_device_does_not_restart(self):
+        self.boot_fixture()
+        self.write('state/no-boot-recovery')
+        self.run_shell('sf_boot_prepare; sf_boot_tick; test "$SF_BOOT_PENDING" = no')
+        (self.root / 'state/no-boot-recovery').unlink()
+        self.prop('ro.product.device', 'other')
+        self.run_shell('sf_boot_prepare; sf_boot_tick; test "$SF_BOOT_PENDING" = no')
+        self.assertEqual(self.controls(), [])
+
+    def test_boot_optout_during_capture_prevents_control(self):
+        self.boot_fixture()
+        self.write('clock', '1400\n')
+        self.run_shell('''SF_BOOT_READY_SINCE=1300
+sf_capture() { : > "$SF_STATE/no-boot-recovery"; }
+sf_repair boot''', 10)
+        self.assertEqual(self.controls(), [])
+
+    def test_denied_boot_control_not_repeated(self):
+        self.boot_fixture()
+        self.write('deny')
+        self.run_shell('''sf_boot_prepare
+echo 1300 > "$CASE_ROOT/clock"; sf_boot_tick
+echo 1330 > "$CASE_ROOT/clock"; sf_boot_tick
+sf_boot_prepare; sf_boot_tick; test "$SF_BOOT_PENDING" = no''')
+        self.assertEqual(len(self.controls()), 1)
+
+    def test_boot_request_checks_budget_under_repair_lock(self):
+        self.boot_fixture()
+        self.write('clock', '1400\n')
+        self.write('state/budget', f'v1 {BOOT} 1 1200\n')
+        self.run_shell('SF_BOOT_READY_SINCE=1300; sf_repair boot', 14)
+        self.assertEqual(self.controls(), [])
+
+    def test_watcher_runs_one_delayed_request_and_keeps_observing(self):
+        self.boot_fixture()
+        self.run_shell('''sf_sleep() {
+ n=$(sf_now); echo "$((n + $1))" > "$CASE_ROOT/clock"
+ if [ "$n" -ge 1600 ]; then : > "$SF_STATE/pause"; fi
+}; sf_watch''')
+        self.assertEqual(self.controls(), ['ctl.restart vendor.soter'])
+        status = json.loads((self.root / 'state/status.json').read_text())
+        self.assertEqual(status['request_mode'], 'boot')
+        self.assertGreaterEqual(int(status['uptime_s']), 1330)
+
     def test_transient_stop_is_not_repaired(self):
         self.prop('init.svc.vendor.soter', 'stopped')
         self.run_shell('sf_sleep() { echo running > "$CASE_ROOT/prop.init.svc.vendor.soter"; }; sf_repair auto', 10)
