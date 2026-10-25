@@ -1,4 +1,4 @@
-name: Soter Key Fixer 1.4 TEST 5
+name: Soter Key Fixer 1.4 TEST 6
 on:
   push:
     branches: [develop]
@@ -45,7 +45,7 @@ jobs:
           sha256sum -c "$RUNNER_TEMP/soter-first.sha256"
       - uses: actions/upload-artifact@v7
         with:
-          name: SoterKeyFixer-1.4-TEST5
+          name: SoterKeyFixer-1.4-TEST6
           path: dist/installable/
           if-no-files-found: error
           retention-days: 30

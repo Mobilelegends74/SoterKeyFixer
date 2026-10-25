@@ -1,5 +1,5 @@
 #!/system/bin/sh
-ui_print 'Soter Key Fixer 1.4 TEST 5 - manual recovery guard correction'
+ui_print 'Soter Key Fixer 1.4 TEST 6 - single full SOTER startup cycle'
 ui_print 'Target: OnePlus 13R / OxygenOS 15 / KernelSU Next'
 ui_print 'Key health is not inferred from service state.'
 ui_print 'Reboot required. Old 1.3 loops may remain active until reboot.'

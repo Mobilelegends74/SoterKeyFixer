@@ -14,8 +14,8 @@ case "${1:-status}" in
         echo "Service availability: $(sf_state)"
         echo 'Hardware key health: UNKNOWN_UNVERIFIED (no validated functional probe implemented)'
         if sf_boot_target; then
-            echo 'Startup workaround: once after boot completion, unlock and 5-second dependency readiness check; no fixed boot delay.'
-        else echo 'Startup workaround: disabled or untested device profile.'; fi
+            echo 'Startup: one stop / 3-second pause / start cycle after boot completion; no device or APK filters.'
+        else echo 'Startup repair disabled by user.'; fi
         echo "Background worker: $(sf_worker_status)"
         if sf_budget; then echo "Requests this boot: $SF_COUNT/3"; else echo 'Recovery budget invalid; automatic recovery is blocked.'; fi
         if [ -f "$SF_STATE/status.json" ]; then

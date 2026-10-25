@@ -10,9 +10,9 @@ SF_AWK_BB=no
 SF_PROFILE=uninspected
 SF_MAX_ATTEMPTS=3
 SF_POLL=120
-SF_GRACE=90
+SF_GRACE=0
 SF_BOOT_DELAY=0
-SF_BOOT_SETTLE=5
+SF_BOOT_SETTLE=0
 SF_BOOT_PENDING=no
 SF_BOOT_READY_SINCE=0
 SF_BOOT_DUE=0
@@ -171,11 +171,6 @@ sf_profile() {
     case "$SF_PROFILE" in persistent|lazy|unsafe|unknown) ;; *) SF_PROFILE=unknown ;; esac
 }
 
-sf_platform() {
-    sf_maker=$(sf_prop ro.product.manufacturer | tr '[:upper:]' '[:lower:]')
-    [ "$sf_maker" = oneplus ] && [ "$(sf_prop ro.build.version.sdk)" = 35 ]
-}
-
 sf_set_grace() {
     sf_time=$(sf_now) || return 1
     if [ -f "$SF_STATE/grace" ]; then
@@ -189,33 +184,9 @@ sf_set_grace() {
 
 sf_ready() {
     sf_active || { SF_REASON=PAUSED_OR_DISABLED; return 1; }
-    sf_platform || { SF_REASON=UNSUPPORTED_PLATFORM; return 1; }
     [ "$(sf_prop sys.boot_completed)" = 1 ] || { SF_REASON=BOOT_PENDING; return 1; }
     sf_power=$(sf_prop sys.powerctl) || { SF_REASON=PROPERTY_QUERY_FAILED; return 1; }
     [ -z "$sf_power" ] || { SF_REASON=SHUTDOWN_PENDING; return 1; }
-    sf_time=$(sf_now) || { SF_REASON=CLOCK_UNAVAILABLE; return 1; }
-    if ! IFS=' ' read -r sf_graceboot sf_deadline sf_extra < "$SF_STATE/grace" 2>/dev/null ||
-        [ "$sf_graceboot" != "$SF_BOOT" ] || ! sf_uint "$sf_deadline" ||
-        [ -n "$sf_extra" ]; then
-        SF_REASON=BOOT_GRACE; return 1
-    fi
-    # Startup and explicit manual requests use readiness instead of a fixed
-    # grace delay. Stopped-service automatic recovery retains its grace.
-    if [ "${1:-}" != boot ] && [ "${1:-}" != manual ] && [ "$sf_time" -lt "$sf_deadline" ]; then
-        SF_REASON=BOOT_GRACE; return 1
-    fi
-    sf_unlocked=$(sf_prop sys.user.0.ce_available)
-    if [ "$sf_unlocked" != true ]; then
-        sf_user=$(sf_timed 5 cmd activity get-started-user-state 0 2>/dev/null) || sf_user=
-        # Android 15 ActivityManager shell prints UserState's numeric value 3.
-        case "$sf_user" in 3|RUNNING_UNLOCKED) ;; *) SF_REASON=USER_LOCKED_OR_UNKNOWN; return 1 ;; esac
-    fi
-    [ "$(sf_prop init.svc.keystore2)" = running ] || { SF_REASON=KEYSTORE_NOT_READY; return 1; }
-    sf_qsee=$(sf_prop init.svc.vendor.qseecomd) || { SF_REASON=PROPERTY_QUERY_FAILED; return 1; }
-    case "$sf_qsee" in ''|running) ;; *) SF_REASON=TEE_NOT_READY; return 1 ;; esac
-    # The native HAL is independent of Tencent's optional Android SDK server.
-    # APK absence/disable/query failure is diagnostic information, not a HAL
-    # recovery prerequisite. Never enable, clear or otherwise change the APK.
     SF_REASON=READY
 }
 
@@ -244,14 +215,31 @@ sf_report() {
     printf '%s; service=%s; key health is NOT verified.\n' "$sf_result" "$sf_available"
 }
 
-sf_control() {
-    # Deliberately literal: no configurable target and no generic service runner.
+sf_start_soter() { sf_timed 5 setprop ctl.start vendor.soter; }
+
+sf_control() (
+    # One complete stop/pause/start cycle, as opposed to a rapid ctl.restart.
+    # Never clear APK data or touch other security services.
     case "$1" in
-        auto) sf_timed 5 setprop ctl.start vendor.soter ;;
-        manual|boot) sf_timed 5 setprop ctl.restart vendor.soter ;;
+        auto) sf_start_soter ;;
+        manual|boot)
+            sf_restore=yes
+            trap 'if [ "$sf_restore" = yes ]; then sf_start_soter; fi' 0
+            trap 'exit 1' 1 2 15
+            sf_timed 5 setprop ctl.stop vendor.soter || exit 1
+            sf_stop_checks=0
+            while [ "$(sf_state)" != stopped ] && [ "$sf_stop_checks" -lt 10 ]; do
+                sf_sleep 1
+                sf_stop_checks=$((sf_stop_checks + 1))
+            done
+            [ "$(sf_state)" = stopped ] || exit 1
+            sf_log 'cycle=stopped; allowing 3 seconds before start'
+            sf_sleep 3 || exit 1
+            sf_start_soter || exit 1
+            sf_restore=no ;;
         *) return 1 ;;
     esac
-}
+)
 
 sf_repair() (
     sf_mode=$1
@@ -259,11 +247,7 @@ sf_repair() (
     exec 8>"$SF_STATE/repair.lock" || exit 1
     sf_flock 8 || { echo 'Another recovery is active.'; exit 12; }
     sf_ready "$sf_mode" || { sf_report "$SF_REASON"; exit 10; }
-    sf_profile || { sf_report PROFILE_READ_FAILED; exit 10; }
-    case "$SF_PROFILE:$sf_mode" in
-        persistent:*|lazy:manual) ;;
-        *) sf_report PROFILE_NOT_SAFE_FOR_THIS_OPERATION; exit 11 ;;
-    esac
+    sf_profile || SF_PROFILE=unknown
     if [ "$sf_mode" = boot ] && ! sf_boot_gate; then
         sf_report BOOT_WORKAROUND_NOT_READY; exit 10
     fi
@@ -404,12 +388,11 @@ sf_diagnose() (
     echo "Diagnostics: $SF_STATE/soterfix-diagnostics.tar.gz (version=$(sf_version), boot_id=$SF_BOOT; root access; review before sharing)."
 )
 
-# Narrow, empirically tested workaround for the observed OnePlus 13R boot
-# scenario. This intentionally schedules ONE request, not a functional probe.
+# One startup cycle for the installed vendor.soter service, without device,
+# Android-version or SDK-APK filters. This is not a functional key probe.
 # The same persisted budget deduplicates manual/boot requests under repair.lock.
 sf_boot_target() {
-    [ ! -e "$SF_STATE/no-boot-recovery" ] &&
-        [ "$(sf_prop ro.product.device)" = OP5D3BL1 ]
+    [ ! -e "$SF_STATE/no-boot-recovery" ]
 }
 
 sf_boot_deadline() {
@@ -421,7 +404,7 @@ sf_boot_deadline() {
 
 sf_boot_prepare() {
     SF_BOOT_PENDING=no; SF_BOOT_READY_SINCE=0; SF_BOOT_LAST_REASON=
-    sf_boot_target || { sf_log 'boot_workaround=off_or_untested_device'; return 0; }
+    sf_boot_target || { sf_log 'boot_cycle=disabled_by_user'; return 0; }
     SF_BOOT_DUE=$(sf_boot_deadline) || { sf_log 'boot_workaround=invalid_schedule; no startup request'; return 0; }
     SF_BOOT_PENDING=yes
     sf_log "boot_workaround=scheduled earliest_uptime=$SF_BOOT_DUE stable_ready_seconds=$SF_BOOT_SETTLE key_health=UNKNOWN_UNVERIFIED"
@@ -472,7 +455,7 @@ sf_boot_tick() {
     esac
     if [ "$SF_BOOT_READY_SINCE" = 0 ]; then
         SF_BOOT_READY_SINCE=$sf_bt_now
-        sf_boot_defer STABILIZING_DEPENDENCIES
+        sf_boot_defer BOOT_COMPLETED_READY
     fi
     sf_bt_stable=$((sf_bt_now - SF_BOOT_READY_SINCE))
     if [ "$sf_bt_stable" -lt "$SF_BOOT_SETTLE" ]; then
@@ -527,11 +510,7 @@ sf_watch() (
         sf_i=$((sf_i + 1))
     done
     sf_set_grace || { sf_log 'GRACE_STATE_ERROR; no automatic recovery.'; exit 1; }
-    sf_profile || exit 1
-    sf_platform && [ "$SF_PROFILE" = persistent ] || {
-        sf_report MONITOR_READ_ONLY_UNSUPPORTED_PROFILE
-        exit 0
-    }
+    sf_profile || SF_PROFILE=unknown
     sf_boot_prepare
     sf_last_state=
     while sf_active; do

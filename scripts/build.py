@@ -24,7 +24,7 @@ EXECUTABLE = {'action.sh', 'service.sh', 'boot-completed.sh', 'uninstall.sh',
 def build():
     output = ROOT / 'dist'
     output.mkdir(exist_ok=True)
-    archive = output / 'SoterKeyFixer-1.4-TEST5.zip'
+    archive = output / 'SoterKeyFixer-1.4-TEST6.zip'
     revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     if os.environ.get('GITHUB_SHA'):
         assert os.environ['GITHUB_SHA'] == revision, 'Checkout differs from workflow source'
@@ -54,7 +54,7 @@ def build():
         assert z.testzip() is None
         assert set(z.namelist()) == set(PAYLOAD) | {'build-info.json'}
         prop = z.read('module.prop').decode()
-        assert 'id=SoterFix\n' in prop and 'versionCode=18\n' in prop and 'version=1.4-test5\n' in prop
+        assert 'id=SoterFix\n' in prop and 'versionCode=19\n' in prop and 'version=1.4-test6\n' in prop
         for name in EXECUTABLE:
             assert (z.getinfo(name).external_attr >> 16) & 0o777 == 0o755
         assert 'post-fs-data.sh' not in z.namelist()
