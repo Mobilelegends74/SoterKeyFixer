@@ -68,6 +68,7 @@ sf_timed() (
 )
 
 sf_prop() { sf_timed 5 getprop "$1" 2>/dev/null; }
+sf_version() { sed -n 's/^version=//p' "$MODDIR/module.prop" | head -n 1; }
 sf_sleep() ( exec 6>&- 7>&- 8>&- 9>&-; exec sleep "$1"; )
 sf_now() {
     IFS=' ' read -r sf_up _ < "$SF_PROC/uptime" || return 1
@@ -200,14 +201,9 @@ sf_ready() {
     [ "$(sf_prop init.svc.keystore2)" = running ] || { SF_REASON=KEYSTORE_NOT_READY; return 1; }
     sf_qsee=$(sf_prop init.svc.vendor.qseecomd) || { SF_REASON=PROPERTY_QUERY_FAILED; return 1; }
     case "$sf_qsee" in ''|running) ;; *) SF_REASON=TEE_NOT_READY; return 1 ;; esac
-    sf_paths=$(sf_timed 5 cmd package path --user 0 com.tencent.soter.soterserver 2>/dev/null) || sf_paths=
-    case "$sf_paths" in package:*) ;; *) SF_REASON=SOTER_PACKAGE_UNAVAILABLE; return 1 ;; esac
-    sf_disabled=$(sf_timed 5 cmd package list packages -d --user 0 com.tencent.soter.soterserver 2>/dev/null) || {
-        SF_REASON=PACKAGE_STATE_UNKNOWN; return 1;
-    }
-    if printf '%s\n' "$sf_disabled" | grep -Fxq 'package:com.tencent.soter.soterserver'; then
-        SF_REASON=PACKAGE_DISABLED; return 1
-    fi
+    # The native HAL is independent of Tencent's optional Android SDK server.
+    # APK absence/disable/query failure is diagnostic information, not a HAL
+    # recovery prerequisite. Never enable, clear or otherwise change the APK.
     SF_REASON=READY
 }
 
@@ -328,9 +324,9 @@ sf_capture() (
             printf '%s=' "$sf_name"
             sf_prop "$sf_name" || echo '[query failed]'
         done
-        echo '--- SOTER package path / disabled listing (user 0) ---'
-        sf_timed 5 cmd package path --user 0 com.tencent.soter.soterserver || echo '[package query failed]'
-        sf_timed 5 cmd package list packages -d --user 0 com.tencent.soter.soterserver || echo '[disabled-state query failed]'
+        echo '--- Optional Tencent SDK APK (diagnostic only, not a native HAL prerequisite) ---'
+        sf_timed 5 cmd package path --user 0 com.tencent.soter.soterserver 2>&1 || echo '[optional package query failed]'
+        sf_timed 5 cmd package list packages -d --user 0 com.tencent.soter.soterserver 2>&1 || echo '[optional disabled-state query failed]'
         echo '--- SELinux mode (read only) ---'
         sf_timed 3 getenforce 2>/dev/null || echo '[getenforce unavailable]'
         echo '--- recent SOTER log messages (best effort, not a health probe) ---'
@@ -370,7 +366,7 @@ sf_diagnose() (
 sf_watch() (
     exec 9>"$SF_STATE/watch.lock" || exit 1
     sf_flock 9 || exit 0
-    sf_log 'monitor=starting version=1.4-test functional_probe=unavailable'
+    sf_log "monitor=starting version=$(sf_version) functional_probe=unavailable"
     sf_i=0
     sf_wait_now=$(sf_now) || exit 1
     sf_boot_until=$((sf_wait_now + 600))

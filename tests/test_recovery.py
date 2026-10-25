@@ -26,6 +26,7 @@ class RecoveryTests(unittest.TestCase):
         for name in ('state', 'bin', 'rc', 'module/lib', 'proc/sys/kernel/random'):
             (self.root / name).mkdir(parents=True, exist_ok=True)
         (self.root / 'module/lib/profile.awk').write_bytes((ROOT / 'lib/profile.awk').read_bytes())
+        (self.root / 'module/module.prop').write_bytes((ROOT / 'module.prop').read_bytes())
         (self.root / 'proc/sys/kernel/random/boot_id').write_text(BOOT + '\n')
         self.write('clock', '1000\n')
         self.prop('init.svc.vendor.soter', 'running')
@@ -154,7 +155,7 @@ sf_init || exit 90
         self.run_shell('sf_repair manual', 11)
         self.assertEqual(self.controls(), [])
 
-    def test_boot_shutdown_grace_locked_tee_and_disabled_package_defer(self):
+    def test_boot_shutdown_grace_locked_tee_defer(self):
         for name, value in [('sys.boot_completed', '0'), ('sys.powerctl', 'reboot'),
                             ('init.svc.keystore2', 'stopped'), ('init.svc.vendor.qseecomd', 'restarting')]:
             original = (self.root / ('prop.' + name)).read_text()
@@ -170,13 +171,35 @@ sf_init || exit 90
         self.prop('sys.user.0.ce_available', 'true')
         self.assertEqual(self.controls(), [])
 
-    def test_disabled_package_and_failed_properties_do_not_trigger(self):
-        self.write('pkg-disabled')
-        self.run_shell('sf_repair manual', 10)
-        (self.root / 'pkg-disabled').unlink()
+    def test_failed_properties_do_not_trigger(self):
         self.write('deny.sys.powerctl')
         self.run_shell('sf_repair manual', 10)
         self.assertEqual(self.controls(), [])
+
+    def test_optional_sdk_apk_does_not_gate_native_hal_recovery(self):
+        self.write('pkg-disabled')
+        self.run_shell('sf_repair manual')
+        self.assertEqual(self.controls(), ['ctl.restart vendor.soter'])
+
+    def test_oneplus13r_package_binder_failure_does_not_block_action(self):
+        # Real device archive: late_start, unversioned dedicated service binary.
+        self.profile('    class late_start\n    user system\n    group system drmrpc\n',
+                     binary='/vendor/bin/hw/vendor.qti.hardware.soter-service')
+        self.stub('cmd', '''echo 'cmd: Failure calling service package: Failed transaction (2147483646)' >&2
+exit 1
+''')
+        self.run_shell('sf_repair manual')
+        self.assertEqual(self.controls(), ['ctl.restart vendor.soter'])
+        self.assertIn('Failed transaction (2147483646)', (self.root / 'state/evidence-before.txt').read_text())
+        self.assertIn(' 1 1000', (self.root / 'state/budget').read_text())
+        status = json.loads((self.root / 'state/status.json').read_text())
+        self.assertEqual(status['result'], 'SERVICE_AVAILABLE_KEY_UNVERIFIED')
+
+    def test_missing_sdk_apk_does_not_block_native_hal_auto_start(self):
+        self.stub('cmd', 'exit 1\n')
+        self.prop('init.svc.vendor.soter', 'stopped')
+        self.run_shell('sf_repair auto')
+        self.assertEqual(self.controls(), ['ctl.start vendor.soter'])
 
     def test_android15_numeric_user_unlocked_fallback(self):
         self.prop('sys.user.0.ce_available', '')

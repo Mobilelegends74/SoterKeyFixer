@@ -1,5 +1,5 @@
 #!/system/bin/sh
-ui_print 'Soter Key Fixer 1.4 TEST - bounded SOTER availability recovery'
+ui_print 'Soter Key Fixer 1.4 TEST 2 - native SOTER availability recovery'
 ui_print 'Target: OnePlus 13R / OxygenOS 15 / KernelSU Next'
 ui_print 'Key health is not inferred from service state.'
 ui_print 'Reboot required. Old 1.3 loops may remain active until reboot.'

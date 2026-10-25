@@ -9,7 +9,7 @@ case "${1:-status}" in
     watch) sf_watch ;;
     repair) sf_repair manual ;;
     status)
-        echo 'Soter Key Fixer 1.4-test'
+        echo "Soter Key Fixer $(sf_version)"
         echo "Service availability: $(sf_state)"
         echo 'Hardware key health: UNKNOWN_UNVERIFIED (no validated functional probe implemented)'
         if sf_budget; then echo "Requests this boot: $SF_COUNT/3"; else echo 'Recovery budget invalid; automatic recovery is blocked.'; fi

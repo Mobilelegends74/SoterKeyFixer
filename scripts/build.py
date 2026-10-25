@@ -23,14 +23,15 @@ EXECUTABLE = {'action.sh', 'service.sh', 'boot-completed.sh', 'uninstall.sh',
 def build():
     output = ROOT / 'dist'
     output.mkdir(exist_ok=True)
-    archive = output / 'SoterKeyFixer-1.4-TEST.zip'
+    archive = output / 'SoterKeyFixer-1.4-TEST2.zip'
     revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     if os.environ.get('GITHUB_SHA'):
         assert os.environ['GITHUB_SHA'] == revision, 'Checkout differs from workflow source'
     dirty = bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=ROOT, text=True))
     if os.environ.get('GITHUB_ACTIONS') == 'true':
         assert not dirty, 'Refusing to package modified CI checkout'
-    build_info = dict(version='1.4-test', source_commit=revision, working_tree_dirty=dirty,
+    properties = dict(line.split('=', 1) for line in (ROOT / 'module.prop').read_text().splitlines() if '=' in line)
+    build_info = dict(version=properties['version'], version_code=int(properties['versionCode']), source_commit=revision, working_tree_dirty=dirty,
                       functional_key_validation=False,
                       upstream_base='b029459e4fd50bcbbf87946fe63fd2c83e1e79bb')
     with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as z:
@@ -52,7 +53,7 @@ def build():
         assert z.testzip() is None
         assert set(z.namelist()) == set(PAYLOAD) | {'build-info.json'}
         prop = z.read('module.prop').decode()
-        assert 'id=SoterFix\n' in prop and 'versionCode=14\n' in prop and 'version=1.4-test\n' in prop
+        assert 'id=SoterFix\n' in prop and 'versionCode=15\n' in prop and 'version=1.4-test2\n' in prop
         for name in EXECUTABLE:
             assert (z.getinfo(name).external_attr >> 16) & 0o777 == 0o755
         assert 'post-fs-data.sh' not in z.namelist()
