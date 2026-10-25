@@ -1,24 +1,109 @@
-# Soter Key Fixer
+# Soter Key Fixer 1.4 — TEST
 
-KernelSU module that repairs SOTER Key issues on OnePlus Snapdragon devices with unlocked bootloader.
+Восстановление доступности SOTER для **OnePlus 13R, OxygenOS 15 (SDK 35),
+KernelSU Next**. Тестовая разработка в ветке `develop`.
 
-## Credits
-This module is a fork of the original work by **酷安@小黄泊**:
-- Original repo: https://github.com/xiaohuangbo/SoterFixer
-- License: GPL-2.0
+**Модуль не восстанавливает аппаратные ключи. Если EngineerMode показывает FAIL
+при работающей службе, эта версия не умеет автоматически подтвердить и исправить
+такой сбой ключа.** Проверенного безопасного OEM-пробника в модуле пока нет.
+`running` не считается проверкой ключа; результат ключа — `UNKNOWN_UNVERIFIED`.
 
-## What's different in this fork
-The original module uses a simple repair loop that runs at boot but is unreliable due to TEE initialization timing. This fork moves the repair logic to `boot-completed.sh` with:
-- 90 second delay after boot to allow TEE stabilization
-- 25 repair attempts at 10 second intervals (~4 minutes total)
-- Execution log at `/data/local/tmp/soterfix.log`
+## Что изменилось относительно 1.3
 
-## Compatibility
-- KernelSU / KernelSU Next
-- OnePlus Snapdragon devices with unlocked bootloader
+- Удалены 25 безусловных перезапусков и вся очистка данных SOTER-приложения.
+- Один наблюдатель, опрос раз в 120 секунд, запись изменений состояния.
+  Загрузочные входы защищены общей `flock`-блокировкой.
+- Автоматически допускается только `ctl.start vendor.soter`, если выделенная
+  постоянная служба трижды остаётся `stopped` с интервалами 5 секунд.
+  Работающая или уже перезапускающаяся служба автоматически не перезапускается.
+- Grace не менее 90 секунд после обнаружения завершённой загрузки,
+  разблокированный пользователь, готовый keystore2, отсутствие остановки
+  qseecomd/выключения телефона и включённый SOTER-пакет обязательны.
+- Общий лимит **3 запроса за загрузку**, включая Action. Паузы между запросами —
+  5 и 15 минут. Повторный Action/новый процесс не обнуляют бюджет; используется uptime.
+- Action отправляет один атомарный `ctl.restart vendor.soter`. Переход состояния
+  или смена PID подтверждают только жизненный цикл службы, а не исправность ключа.
+- Ограниченные журналы, снимки до запроса, причины отказов и диагностический архив.
 
-## Usage
-Install via KernelSU module manager, then reboot. The fix runs automatically in the background. To manually trigger the fix, use the Action button in KernelSU.
+Профиль проверяется по точному init-описанию. Неизвестные/неоднозначные службы,
+общие процессы, `critical`, `reboot_on_failure`, `onrestart`, переопределения и
+SOTER-зависимые глобальные init-триггеры блокируют вмешательство. Lazy/oneshot/
+disabled-службы не считаются автоматически сломанными; безопасный выделенный
+lazy-профиль допускает ручной Action. Другие производители/SDK — только диагностика.
 
-## Disclaimer
-This module is free. Based on GPL-2.0 licensed work.
+## Установка и проверка
+
+1. В [Actions](https://github.com/Mobilelegends74/SoterKeyFixer/actions) скачайте
+   artifact `SoterKeyFixer-1.4-TEST` успешной сборки `develop`. Распакуйте внешний
+   архив GitHub. В менеджере устанавливается внутренний **`SoterKeyFixer-1.4-TEST.zip`**.
+2. Установите ZIP в KernelSU Next → Modules и **перезагрузитесь**. ID `SoterFix`
+   сохранён для обновления 1.3. Старый выполняющийся цикл менеджер при обновлении
+   может не остановить — тестировать до перезагрузки нельзя.
+3. Разблокируйте телефон, подождите 2–3 минуты. Выполните прежний заводской тест
+   EngineerMode (`*#899#`). Сохраните точный результат; повторять до случайного
+   PASS — не доказательство исправления.
+4. При необходимости нажмите Action один раз. Не запускайте его во время
+   SOTER-аутентификации/платежа. Консоль покажет результат или причину отказа.
+   Grace/cooldown/profile могут вернуть ненулевой код Action — это защитный отказ.
+5. Повторите тест после сна/ожидания и после следующей перезагрузки. Проверьте
+   обычную аутентификацию и ранее работавшие RKP/StrongBox/аттестацию.
+
+Скрипты не управляют KeyMint, RKP, StrongBox, keystore2 или TEE-демонами;
+статусы зависимостей только читаются. Не меняются Keybox, сертификаты, SELinux,
+свойства доверия; SOTER не замораживается ради пропуска проверки. Внутренние
+связи закрытого TEE и работу на телефоне CI проверить не может.
+
+## Диагностика без перезапуска
+
+```sh
+su -c 'sh /data/adb/modules/SoterFix/soterctl.sh status'
+su -c 'sh /data/adb/modules/SoterFix/soterctl.sh diagnose'
+```
+
+Архив: **`/data/adb/soterfix/soterfix-diagnostics.tar.gz`**, доступ через root-
+файловый менеджер. Action также создаёт этот архив. Внутри: ограниченные журналы,
+init-профиль, бюджет, последнее наблюдение и выбранные SOTER-сообщения logcat.
+Нет полного logcat, данных приложений или файлов ключей. Строки, распознанные
+как payload ключей/сертификатов, отбрасываются; vendor-логи могут содержать названия
+приложений и другие сведения — просмотрите архив перед отправкой.
+Отсутствие ошибок не подтверждает исправность ключа.
+
+Свой каталог имеет права `0700`, файлы `0600`. `status.json` — последнее
+наблюдение при попытке, с boot ID и uptime. Журнал — два файла примерно по
+128 КиБ; архив/снимки перезаписываются в собственном каталоге.
+
+```sh
+su -c 'sh /data/adb/modules/SoterFix/soterctl.sh pause'
+su -c 'sh /data/adb/modules/SoterFix/soterctl.sh resume'
+```
+
+Пауза сохраняется после перезагрузки. Disable/Remove/Update останавливают
+наблюдателя при следующем опросе (до 120 секунд); перед запросом признаки
+перепроверяются. Удаление создаёт stop-маркер текущей загрузки; после повторной
+установки и перезагрузки он не блокирует новую версию. Живые lock-inode не
+удаляются. Диагностика остаётся после удаления; свой каталог можно удалить
+вручную после перезагрузки, когда модуль уже удалён. Данные SOTER не очищаются.
+
+## Проверки и сборка
+
+```sh
+python3 -m unittest discover -s tests -v
+python3 scripts/build.py
+```
+
+CI: синтаксис shell, ShellCheck, ошибки/конкуренция в dash, BusyBox ash и mksh, состав
+ZIP, права, версия и SHA-256. Сборка воспроизводима, список файлов явный.
+Тестовые подмены Android-команд в ZIP не включаются. Workflow имеет только
+`contents: read`, публикует **только artifacts**, без Release/тегов. Push в
+`develop` запускает CI. `workflow_dispatch` доступен после появления workflow
+в default branch.
+
+[Технический отчёт](docs/technical-report.md) ·
+[SDK Tencent SOTER](https://github.com/Tencent/soter) ·
+[Жизненный цикл KernelSU](https://kernelsu.org/guide/module.html)
+
+## Авторы и лицензия
+
+Исходная работа: **酷安@小黄泊** — [xiaohuangbo/SoterFixer](https://github.com/xiaohuangbo/SoterFixer).
+Версия 1.3: **luigimak** — [luigimak/SoterKeyFixer](https://github.com/luigimak/SoterKeyFixer).
+Разработка 1.4 TEST: **Mobilelegends74**. **GPL-2.0**, исходный LICENSE сохранён.

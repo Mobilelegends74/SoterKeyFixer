@@ -1,8 +1,8 @@
 id=SoterFix
-name=Soter Key Fixer
-version=1.3
-versionCode=13
-author=酷安@小黄泊, edited by luigimak
-description=Repairs SOTER Key issues, automatically executes the repair script upon startup.
+name=Soter Key Fixer 1.4 [TEST]
+version=1.4-test
+versionCode=14
+author=酷安@小黄泊, luigimak, Mobilelegends74
+description=Bounded SOTER service recovery with diagnostics. Hardware key validity is not verified. Reboot after installation.
 supported=KernelSU
 banner=banner.png

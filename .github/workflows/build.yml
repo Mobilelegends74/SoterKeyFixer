@@ -1,0 +1,51 @@
+name: Soter Key Fixer 1.4 TEST
+on:
+  push:
+    branches: [develop]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install shell verification tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y shellcheck busybox-static mksh
+      - name: Shell syntax and ShellCheck
+        run: |
+          for f in action.sh service.sh boot-completed.sh customize.sh uninstall.sh soterctl.sh lib/soter.sh; do
+            dash -n "$f"
+            busybox ash -n "$f"
+            mksh -n "$f"
+            shellcheck -s sh -S warning "$f"
+          done
+      - name: Fault and lifecycle tests (dash)
+        run: python3 -m unittest discover -s tests -v
+      - name: Fault and lifecycle tests (BusyBox ash)
+        env:
+          SOTER_TEST_BUSYBOX: /usr/bin/busybox
+        run: python3 -m unittest discover -s tests -v
+      - name: Fault and lifecycle tests (mksh with BusyBox helpers)
+        env:
+          SOTER_TEST_BUSYBOX: /usr/bin/busybox
+          SOTER_TEST_MKSH: /bin/mksh
+        run: python3 -m unittest discover -s tests -v
+      - name: Build and verify installable ZIP
+        run: |
+          python3 scripts/build.py
+          sha256sum dist/*.zip > "$RUNNER_TEMP/soter-first.sha256"
+          python3 scripts/build.py
+          sha256sum -c "$RUNNER_TEMP/soter-first.sha256"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: SoterKeyFixer-1.4-TEST
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
