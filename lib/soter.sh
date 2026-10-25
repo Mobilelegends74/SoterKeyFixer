@@ -199,9 +199,9 @@ sf_ready() {
         [ -n "$sf_extra" ]; then
         SF_REASON=BOOT_GRACE; return 1
     fi
-    # Only the one-time startup operation uses readiness instead of a fixed
-    # grace delay. Manual and stopped-service recovery retain their cooldowns.
-    if [ "${1:-}" != boot ] && [ "$sf_time" -lt "$sf_deadline" ]; then
+    # Startup and explicit manual requests use readiness instead of a fixed
+    # grace delay. Stopped-service automatic recovery retains its grace.
+    if [ "${1:-}" != boot ] && [ "${1:-}" != manual ] && [ "$sf_time" -lt "$sf_deadline" ]; then
         SF_REASON=BOOT_GRACE; return 1
     fi
     sf_unlocked=$(sf_prop sys.user.0.ce_available)
@@ -287,6 +287,9 @@ sf_repair() (
     [ "$SF_COUNT" -lt "$SF_MAX_ATTEMPTS" ] || { sf_report CIRCUIT_OPEN_UNTIL_REBOOT; exit 13; }
     sf_time=$(sf_now) || exit 1
     case "$SF_COUNT" in 0) sf_wait=0 ;; 1) sf_wait=300 ;; *) sf_wait=900 ;; esac
+    # An early startup attempt must not prevent the user from requesting a
+    # real manual recovery. Keep serialization and the total per-boot cap.
+    [ "$sf_mode" != manual ] || sf_wait=15
     if [ "$SF_COUNT" -gt 0 ] && [ "$((sf_time - SF_LAST))" -lt "$sf_wait" ]; then
         sf_report COOLDOWN_NO_ACTION; exit 10
     fi
