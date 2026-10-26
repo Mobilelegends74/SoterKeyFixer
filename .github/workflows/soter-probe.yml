@@ -33,7 +33,7 @@ jobs:
             -std=c11 -Wall -Wextra -Werror -O2 -fPIE -pie -Wl,-z,relro,-z,now \
             tools/soter-probe/probe.c -ldl -o probe-out/soter-direct-probe
           file probe-out/soter-direct-probe
-          sha256sum probe-out/soter-direct-probe > probe-out/soter-direct-probe.sha256
+          (cd probe-out && sha256sum soter-direct-probe > soter-direct-probe.sha256)
           cp tools/soter-probe/README.md probe-out/README.md
       - uses: actions/upload-artifact@v7
         with:
