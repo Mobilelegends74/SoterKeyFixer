@@ -1,0 +1,43 @@
+name: SOTER direct diagnostic probe
+on:
+  push:
+    branches: [soter-direct-probe]
+    paths:
+      - 'tools/soter-probe/**'
+      - '.github/workflows/soter-probe.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify error handling with mock Binder
+        run: python3 tools/soter-probe/test_probe.py -v
+      - name: Compile Android arm64 executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          probe_ndk="${ANDROID_NDK_LATEST_HOME:-}"
+          if [[ ! -d "$probe_ndk/toolchains/llvm" ]]; then
+            probe_ndk="$(find "${ANDROID_HOME}/ndk" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -V | tail -1)"
+          fi
+          if [[ ! -d "$probe_ndk/toolchains/llvm" ]]; then
+            sdkmanager 'ndk;27.2.12479018'
+            probe_ndk="${ANDROID_HOME}/ndk/27.2.12479018"
+          fi
+          mkdir -p probe-out
+          "$probe_ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang" \
+            -std=c11 -Wall -Wextra -Werror -O2 -fPIE -pie -Wl,-z,relro,-z,now \
+            tools/soter-probe/probe.c -ldl -o probe-out/soter-direct-probe
+          file probe-out/soter-direct-probe
+          sha256sum probe-out/soter-direct-probe > probe-out/soter-direct-probe.sha256
+          cp tools/soter-probe/README.md probe-out/README.md
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Soter-Direct-Probe-arm64
+          path: probe-out/
+          retention-days: 30
+          if-no-files-found: error
